@@ -1,0 +1,77 @@
+{
+    "common": {
+        "name": "casambi-lithernet",
+        "version": "0.0.1",
+        "news": {
+            "0.0.1": {
+                "en": "initial release",
+                "de": "Erstveröffentlichung",
+                "ru": "Начальная версия",
+                "pt": "lançamento inicial",
+                "nl": "Eerste uitgave",
+                "fr": "Première version",
+                "it": "Versione iniziale",
+                "es": "Versión inicial",
+                "pl": "Pierwsze wydanie",
+                "zh-cn": "首次出版"
+            }
+        },
+        "title": "Local control of Casambi enabled devices",
+        "titleLang": {
+            "en": "Local control of Casambi enabled devices",
+            "de": "Lokale Steuerung von Casambi-fähigen Geräten",
+            "ru": "Локальное управление устройствами с поддержкой Casambi",
+            "pt": "Controle local de dispositivos habilitados para Casambi",
+            "nl": "Lokale controle van Casambi-compatibele apparaten",
+            "fr": "Contrôle local des appareils compatibles Casambi",
+            "it": "Controllo locale dei dispositivi abilitati Casambi",
+            "es": "Control local de dispositivos habilitados por Casambi",
+            "pl": "Lokalna kontrola urządzeń obsługujących Casambi",
+            "zh-cn": "支持 Casambi 的设备的本地控制"
+        },
+        "desc": {
+            "en": "Local control of casambi enabled devices with the Lithernet Casambi Gateway",
+            "de": "Lokale Steuerung von Casambi-fähigen Geräten mit dem Lithernet Casambi Gateway",
+            "ru": "Локальное управление устройствами с поддержкой casambi с помощью шлюза Lithernet Casambi",
+            "pt": "Controle local de dispositivos habilitados para casambi com o Lithernet Casambi Gateway",
+            "nl": "Lokale controle van casambi-compatibele apparaten met de Lithernet Casambi Gateway",
+            "fr": "Contrôle local des appareils compatibles Casambi avec la passerelle Lithernet Casambi",
+            "it": "Controllo locale dei dispositivi abilitati casambi con Lithernet Casambi Gateway",
+            "es": "Control local de dispositivos habilitados para Casambi con el Gateway Casambi de Lithernet",
+            "pl": "Lokalna kontrola urządzeń obsługujących casambi za pomocą bramki Lithernet Casambi",
+            "zh-cn": "使用 Lithernet Casambi 网关对支持 casambi 的设备进行本地控制"
+        },
+        "authors": [
+            "Friedrich Engel <engel@loehr-kg.de>"
+        ],
+        "keywords": [
+            "Casambi",
+            "Lithernet",
+            "Bluetooth",
+            "Light"
+        ],
+        "license": "MIT",
+        "platform": "Javascript/Node.js",
+        "main": "main.js",
+        "icon": "casambi-lithernet.png",
+        "enabled": true,
+        "extIcon": "https://raw.githubusercontent.com/KLKG/ioBroker.casambi-lithernet/master/admin/casambi-lithernet.png",
+        "readme": "https://github.com/KLKG/ioBroker.casambi-lithernet/blob/master/README.md",
+        "loglevel": "info",
+        "mode": "daemon",
+        "type": "lighting",
+        "compact": true,
+        "materialize": true,
+        "dependencies": [
+            {
+                "js-controller": ">=1.4.2"
+            }
+        ]
+    },
+    "native": {
+        "option1": true,
+        "option2": "42"
+    },
+    "objects": [],
+    "instanceObjects": []
+}
