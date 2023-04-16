@@ -11,11 +11,31 @@ const utils = require('@iobroker/adapter-core');
 // Load your modules here, e.g.:
 // const fs = require("fs");
 
+// Load your modules here, e.g.:
+const dgram = require("dgram");
+const request = require("request");
+
 /**
  * The adapter instance
  * @type {ioBroker.Adapter}
  */
 let adapter;
+
+const DEFAULT_UDP_PORT = 10020;
+const BROADCAST_UDP_PORT = 10020;
+
+let txSocket;
+let rxSocketReports = null;
+let rxSocketBroadcast = null;
+let sendDelayTimer = null;
+
+const states = {};          // contains all actual state values
+const stateChangeListeners = {};
+const currentStateValues = {}; // contains all actual state values
+const sendQueue = [];
+
+//var ioBroker_Settings
+let ioBrokerLanguage      = "en";
 
 /**
  * Starts the adapter instance
@@ -26,127 +46,255 @@ function startAdapter(options) {
     return adapter = utils.adapter(Object.assign({}, options, {
         name: 'casambi-lithernet',
 
-        // The ready callback is called when databases are connected and adapter received configuration.
-        // start here!
-        ready: main, // Main method defined below for readability
+        ready: onAdapterReady,
 
-        // is called when adapter shuts down - callback has to be called under any circumstances!
-        unload: (callback) => {
-            try {
-                // Here you must clear all timeouts or intervals that may still be active
-                // clearTimeout(timeout1);
-                // clearTimeout(timeout2);
-                // ...
-                // clearInterval(interval1);
+        unload: onAdapterUnload,
 
-                callback();
-            } catch (e) {
-                callback();
-            }
-        },
+        stateChange: onAdapterStateChange,
 
-        // If you need to react to object changes, uncomment the following method.
-        // You also need to subscribe to the objects with `adapter.subscribeObjects`, similar to `adapter.subscribeStates`.
-        // objectChange: (id, obj) => {
-        //     if (obj) {
-        //         // The object was changed
-        //         adapter.log.info(`object ${id} changed: ${JSON.stringify(obj)}`);
-        //     } else {
-        //         // The object was deleted
-        //         adapter.log.info(`object ${id} deleted`);
-        //     }
-        // },
-
-        // is called if a subscribed state changes
-        stateChange: (id, state) => {
-            if (state) {
-                // The state was changed
-                adapter.log.info(`state ${id} changed: ${state.val} (ack = ${state.ack})`);
-            } else {
-                // The state was deleted
-                adapter.log.info(`state ${id} deleted`);
-            }
-        },
-
-        // If you need to accept messages in your adapter, uncomment the following block.
-        // /**
-        //  * Some message was sent to this instance over message box. Used by email, pushover, text2speech, ...
-        //  * Using this method requires "common.message" property to be set to true in io-package.json
-        //  */
-        // message: (obj) => {
-        //     if (typeof obj === 'object' && obj.message) {
-        //         if (obj.command === 'send') {
-        //             // e.g. send email or pushover or whatever
-        //             adapter.log.info('send command');
-
-        //             // Send response in callback if required
-        //             if (obj.callback) adapter.sendTo(obj.from, obj.command, 'Message received', obj.callback);
-        //         }
-        //     }
-        // },
     }));
 }
 
+// startup
+function onAdapterReady() {
+    if (! checkConfig()) {
+        adapter.log.error("start of adapter not possible due to config errors");
+        return;
+    }
+
+    main();
+}
+
+//unloading
+function onAdapterUnload(callback) {
+    try {
+        if (sendDelayTimer) {
+            clearInterval(sendDelayTimer);
+        }
+
+        if (txSocket) {
+            txSocket.close();
+        }
+
+        if (rxSocketReports) {
+            if (rxSocketBroadcast.active)
+                rxSocketReports.close();
+        }
+
+        if (rxSocketBroadcast) {
+            if (rxSocketBroadcast.active)
+                rxSocketBroadcast.close();
+        }
+
+    } catch (e) {
+        if (adapter.log)
+            adapter.log.warn("Error while closing: " + e);
+    }
+
+    callback();
+}
+
+// is called if a subscribed state changes
+function onAdapterStateChange (id, state) {
+
+    if (!id || !state) {
+        return;
+    }
+    adapter.log.silly("stateChange " + id + " " + JSON.stringify(state));
+
+    const oldValue = getStateInternal(id);
+    let newValue = state.val;
+
+    if (state.ack) {
+        return;
+    }
+    if (! id.startsWith(adapter.namespace)) {
+        // do not care for foreign states
+        return;
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(stateChangeListeners, id)) {
+        adapter.log.error("Unsupported state change: " + id);
+        return;
+    }
+
+    stateChangeListeners[id](oldValue, newValue);
+}
+
+
 async function main() {
 
-    // The adapters config (in the instance object everything under the attribute "native") is accessible via
-    // adapter.config:
+    await adapter.setStateAsync("info.connection", false, true);
+
     adapter.log.info('config option1: ' + adapter.config.option1);
     adapter.log.info('config option2: ' + adapter.config.option2);
 
-    /*
-        For every state in the system there has to be also an object of type state
-        Here a simple template for a boolean variable named "testVariable"
-        Because every adapter instance uses its own unique namespace variable names can't collide with other adapters variables
-    */
-    await adapter.setObjectNotExistsAsync('testVariable', {
-        type: 'state',
-        common: {
-            name: 'testVariable',
-            type: 'boolean',
-            role: 'indicator',
-            read: true,
-            write: true,
-        },
-        native: {},
+    txSocket = dgram.createSocket("udp4");
+
+    rxSocketReports = dgram.createSocket({ type: "udp4", reuseAddr: true });
+    rxSocketReports.on("error", (err) => {
+        adapter.log.error("RxSocketReports error: " + err.message + "\n" + err.stack);
+        rxSocketReports.close();
+    });
+    rxSocketReports.on("listening", function () {
+        rxSocketReports.setBroadcast(true);
+        const address = rxSocketReports.address();
+        adapter.log.debug("UDP server listening on " + address.address + ":" + address.port);
+    });
+    rxSocketReports.on("message", handleLithernetMessage);
+    rxSocketReports.bind(DEFAULT_UDP_PORT, "0.0.0.0");
+
+    rxSocketBroadcast = dgram.createSocket({ type: "udp4", reuseAddr: true });
+    rxSocketBroadcast.on("error", (err) => {
+        adapter.log.error("RxSocketBroadcast error: " + err.message + "\n" + err.stack);
+        rxSocketBroadcast.close();
+    });
+    rxSocketBroadcast.on("listening", function () {
+        rxSocketBroadcast.setBroadcast(true);
+        rxSocketBroadcast.setMulticastLoopback(true);
+        const address = rxSocketBroadcast.address();
+        adapter.log.debug("UDP broadcast server listening on " + address.address + ":" + address.port);
+    });
+    rxSocketBroadcast.on("message", handleLithernetBroadcast);
+    rxSocketBroadcast.bind(BROADCAST_UDP_PORT);
+
+    adapter.getForeignObject("system.config", function(err, ioBroker_Settings) {
+        if (err) {
+            adapter.log.error("Error while fetching system.config: " + err);
+            return;
+        }
+
+        if (ioBroker_Settings && (ioBroker_Settings.common.language == "de")) {
+            ioBrokerLanguage = "de";
+        } else {
+            ioBrokerLanguage = "en";
+        }
     });
 
-    // In order to get state updates, you need to subscribe to them. The following line adds a subscription for our variable we have created above.
-    adapter.subscribeStates('testVariable');
-    // You can also add a subscription for multiple states. The following line watches all states starting with "lights."
-    // adapter.subscribeStates('lights.*');
-    // Or, if you really must, you can also watch all states. Don't do this if you don't need to. Otherwise this will cause a lot of unnecessary load on the system:
-    // adapter.subscribeStates('*');
-
-    /*
-        setState examples
-        you will notice that each setState will cause the stateChange event to fire (because of above subscribeStates cmd)
-    */
-    // the variable testVariable is set to true as command (ack=false)
-    await adapter.setStateAsync('testVariable', true);
-
-    // same thing, but the value is flagged "ack"
-    // ack should be always set to true if the value is received from or acknowledged from the target system
-    await adapter.setStateAsync('testVariable', { val: true, ack: true });
-
-    // same thing, but the state is deleted after 30s (getState will return null afterwards)
-    await adapter.setStateAsync('testVariable', { val: true, ack: true, expire: 30 });
-
-    // examples for the checkPassword/checkGroup functions
-    adapter.checkPassword('admin', 'iobroker', (res) => {
-        adapter.log.info('check user admin pw iobroker: ' + res);
-    });
-
-    adapter.checkGroup('admin', 'admin', (res) => {
-        adapter.log.info('check group user admin group admin: ' + res);
+    adapter.getStatesOf(function (err, data) {
+        if (data) {
+            for (let i = 0; i < data.length; i++) {
+                if (data[i].native && data[i].native.udpKey) {
+                    states[data[i].native.udpKey] = data[i];
+                }
+            }
+        }
+        // save all state value into internal store
+        adapter.getStates("*", function (err, obj) {
+            if (err) {
+                adapter.log.error("error reading states: " + err);
+            } else {
+                if (obj) {
+                    for (const i in obj) {
+                        if (! Object.prototype.hasOwnProperty.call(obj, i)) continue;
+                        if (obj[i] !== null) {
+                            if (typeof obj[i] == "object") {
+                                //do something
+                            } else {
+                                adapter.log.error("unexpected state value: " + obj[i]);
+                            }
+                        }
+                    }
+                } else {
+                    adapter.log.error("not states found");
+                }
+            }
+        });
+        start();
     });
 }
 
-// @ts-ignore parent is a valid property on module
-if (module.parent) {
-    // Export startAdapter in compact mode
-    module.exports = startAdapter;
-} else {
-    // otherwise start the instance directly
-    startAdapter();
+function start() {
+    adapter.subscribeStates("*");
+
+    //sendUdpDatagram("i");   only needed for discovery
 }
+
+// check if config data is fine for adapter start
+function checkConfig() {
+    let everythingFine = true;
+    if (adapter.config.host == "0.0.0.0" || adapter.config.host == "127.0.0.1") {
+        adapter.log.warn("Can't start adapter for invalid IP address: " + adapter.config.host);
+        everythingFine = false;
+    }
+
+    return everythingFine;
+}
+
+// handle incomming message from wallbox
+function handleLithernetMessage(message, remote) {
+    adapter.log.debug("UDP datagram from " + remote.address + ":" + remote.port + ": '" + message + "'");
+    handleMessage(message, "received");
+}
+
+// handle incomming broadcast message from wallbox
+function handleLithernetBroadcast(message, remote) {
+    adapter.log.debug("UDP broadcast datagram from " + remote.address + ":" + remote.port + ": '" + message + "'");
+    handleMessage(message, "broadcast");
+}
+
+function handleMessage(message, origin) {
+    // Mark that connection is established by incomming data
+    adapter.setState("info.connection", true, true);
+    let msg = "";
+    try {
+        msg = message.toString().trim();
+        if (msg.length === 0) {
+            return;
+        }
+
+        if (msg[0] == '"') {
+            msg = "{ " + msg + " }";
+        }
+    } catch (e) {
+        adapter.log.warn("Error handling " + origin + " message: " + e + " (" + msg + ")");
+        return;
+    }
+
+}
+
+function sendUdpDatagram(message, highPriority) {
+    if (highPriority) {
+        sendQueue.unshift(message);
+    } else {
+        sendQueue.push(message);
+    }
+    if (!sendDelayTimer) {
+        sendNextQueueDatagram();
+        sendDelayTimer = setInterval(sendNextQueueDatagram, 300);
+    }
+}
+
+function sendNextQueueDatagram() {
+    if (sendQueue.length === 0) {
+        clearInterval(sendDelayTimer);
+        sendDelayTimer = null;
+        return;
+    }
+    const message = sendQueue.shift();
+    if (txSocket) {
+        try {
+            txSocket.send(message, 0, message.length, DEFAULT_UDP_PORT, adapter.config.host, function (err) {
+                if (err) {
+                    adapter.log.warn("UDP send error for " + adapter.config.host + ":" + DEFAULT_UDP_PORT + ": " + err);
+                    return;
+                }
+                adapter.log.debug("Sent '" + message + "' to " + adapter.config.host + ":" + DEFAULT_UDP_PORT);
+            });
+        } catch (e) {
+            if (adapter.log)
+                adapter.log.error("Error sending message '" + message + "': " + e);
+        }
+    }
+}
+
+function getStateInternal(id) {
+    if ((id == null) || (typeof id !== "string") || (id.trim().length == 0)) {
+        return null;
+    }
+    let obj = id;
+    if (! obj.startsWith(adapter.namespace + "."))
+        obj = adapter.namespace + "." + id;
+    return currentStateValues[obj];
+}
+
